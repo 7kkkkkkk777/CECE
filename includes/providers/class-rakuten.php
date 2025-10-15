@@ -23,11 +23,39 @@ class Rakuten {
 
     public function get_settings_fields() {
         return array(
+            'auth_method' => array(
+                'label' => __('Método de Autenticação', '7k-coupons-importer'),
+                'type' => 'select',
+                'options' => array(
+                    'bearer' => __('Bearer Token Manual', '7k-coupons-importer'),
+                    'oauth2' => __('OAuth2 Automático', '7k-coupons-importer')
+                ),
+                'default' => 'oauth2',
+                'description' => __('Selecione o método de autenticação', '7k-coupons-importer')
+            ),
             'bearer_token' => array(
-                'label' => __('Bearer Token', '7k-coupons-importer'),
+                'label' => __('Bearer Token (Manual)', '7k-coupons-importer'),
                 'type' => 'text',
-                'required' => true,
-                'description' => __('Token de autenticação Bearer obtido na Rakuten', '7k-coupons-importer')
+                'required' => false,
+                'description' => __('Token de autenticação Bearer (apenas se usar método manual)', '7k-coupons-importer')
+            ),
+            'client_id' => array(
+                'label' => __('Client ID (OAuth2)', '7k-coupons-importer'),
+                'type' => 'text',
+                'required' => false,
+                'description' => __('Client ID obtido no Developer Portal da Rakuten', '7k-coupons-importer')
+            ),
+            'client_secret' => array(
+                'label' => __('Client Secret (OAuth2)', '7k-coupons-importer'),
+                'type' => 'password',
+                'required' => false,
+                'description' => __('Client Secret obtido no Developer Portal da Rakuten', '7k-coupons-importer')
+            ),
+            'scope' => array(
+                'label' => __('Scope / SID (OAuth2)', '7k-coupons-importer'),
+                'type' => 'text',
+                'required' => false,
+                'description' => __('Seu Publisher Site ID (SID) como scope', '7k-coupons-importer')
             ),
             'enable_cron' => array(
                 'label' => __('Importação Automática', '7k-coupons-importer'),
@@ -64,6 +92,12 @@ class Rakuten {
     }
 
     public function validate_settings($settings) {
+        $auth_method = isset($settings['auth_method']) ? $settings['auth_method'] : 'bearer';
+
+        if ($auth_method === 'oauth2') {
+            return !empty($settings['client_id']) && !empty($settings['client_secret']) && !empty($settings['scope']);
+        }
+
         return !empty($settings['bearer_token']);
     }
 
@@ -138,14 +172,83 @@ class Rakuten {
         return $final_coupons;
     }
 
-    private function make_api_request($endpoint, $settings, $params = array()) {
-        $url = $this->api_base_url . $endpoint;
-        if (!empty($params)) $url = add_query_arg($params, $url);
+    private function get_oauth_token($settings) {
+        $transient_key = 'rakuten_oauth_token_' . md5($settings['client_id']);
+        $cached_token = get_transient($transient_key);
+
+        if ($cached_token) {
+            return $cached_token;
+        }
+
+        $token_url = 'https://api.rakutenadvertising.com/token';
+        $auth = base64_encode($settings['client_id'] . ':' . $settings['client_secret']);
 
         $args = array(
             'timeout' => 30,
             'headers' => array(
-                'Authorization' => 'Bearer ' . $settings['bearer_token'],
+                'Authorization' => 'Basic ' . $auth,
+                'Content-Type' => 'application/x-www-form-urlencoded'
+            ),
+            'body' => array(
+                'grant_type' => 'client_credentials',
+                'scope' => $settings['scope']
+            )
+        );
+
+        $response = wp_remote_post($token_url, $args);
+
+        if (is_wp_error($response)) {
+            $this->logger->log('error', 'Rakuten OAuth error: ' . $response->get_error_message());
+            return false;
+        }
+
+        $response_code = wp_remote_retrieve_response_code($response);
+        $body = wp_remote_retrieve_body($response);
+
+        if ($response_code !== 200) {
+            $this->logger->log('error', sprintf('Rakuten OAuth failed with code %d: %s', $response_code, $body));
+            return false;
+        }
+
+        $token_data = json_decode($body, true);
+
+        if (!isset($token_data['access_token'])) {
+            $this->logger->log('error', 'Rakuten OAuth: No access_token in response');
+            return false;
+        }
+
+        $expires_in = isset($token_data['expires_in']) ? intval($token_data['expires_in']) : 3600;
+        set_transient($transient_key, $token_data['access_token'], $expires_in - 60);
+
+        $this->logger->log('info', 'Rakuten OAuth token obtained successfully');
+
+        return $token_data['access_token'];
+    }
+
+    private function get_bearer_token($settings) {
+        $auth_method = isset($settings['auth_method']) ? $settings['auth_method'] : 'bearer';
+
+        if ($auth_method === 'oauth2') {
+            return $this->get_oauth_token($settings);
+        }
+
+        return isset($settings['bearer_token']) ? $settings['bearer_token'] : '';
+    }
+
+    private function make_api_request($endpoint, $settings, $params = array()) {
+        $url = $this->api_base_url . $endpoint;
+        if (!empty($params)) $url = add_query_arg($params, $url);
+
+        $bearer_token = $this->get_bearer_token($settings);
+
+        if (!$bearer_token) {
+            return new \WP_Error('auth_error', 'Failed to obtain authentication token');
+        }
+
+        $args = array(
+            'timeout' => 30,
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $bearer_token,
                 'Accept' => 'application/xml',
                 'User-Agent' => 'WordPress/7K-Coupons-Importer'
             )
@@ -160,11 +263,17 @@ class Rakuten {
         $this->logger->log_api_request('rakuten', $endpoint, $response_code, $response_time);
 
         if (is_wp_error($response)) return $response;
-        if ($response_code !== 200) return new \WP_Error('api_error', "API returned status $response_code");
+        if ($response_code !== 200) {
+            $this->logger->log('error', sprintf('Rakuten API error %d: %s', $response_code, substr($body, 0, 500)));
+            return new \WP_Error('api_error', "API returned status $response_code");
+        }
 
         libxml_use_internal_errors(true);
         $xml = simplexml_load_string($body, 'SimpleXMLElement', LIBXML_NOCDATA);
-        if (!$xml) return new \WP_Error('xml_error', 'Invalid XML response');
+        if (!$xml) {
+            $this->logger->log('error', 'Rakuten XML parse error');
+            return new \WP_Error('xml_error', 'Invalid XML response');
+        }
 
         $json = json_encode($xml);
         return json_decode($json, true);

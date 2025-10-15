@@ -25,12 +25,6 @@ if (!isset($available_providers[$provider_slug])) {
 $current_provider_class = $available_providers[$provider_slug]['class'];
 $provider_instance = class_exists($current_provider_class) ? new $current_provider_class() : null;
 
-// Helper to show admin notices
-function ci7k_admin_notice($message, $type = 'success') {
-    $class = $type === 'error' ? 'notice-error' : 'notice-success';
-    echo '<div class="notice ' . esc_attr($class) . ' is-dismissible ci7k-notice"><p>' . esc_html($message) . '</p></div>';
-}
-
 if (!$provider_instance) {
     ci7k_admin_notice(__('Erro ao carregar provedor.', '7k-coupons-importer'), 'error');
 } else {
@@ -218,6 +212,18 @@ if (!$provider_instance) {
                                 </label>
                             <?php elseif ($type === 'number'): ?>
                                 <input type="number" id="<?php echo esc_attr($key); ?>" name="<?php echo esc_attr($key); ?>" value="<?php echo esc_attr($value); ?>" class="small-text">
+                            <?php elseif ($type === 'select'): ?>
+                                <select id="<?php echo esc_attr($key); ?>" name="<?php echo esc_attr($key); ?>">
+                                    <?php if (isset($field['options']) && is_array($field['options'])): ?>
+                                        <?php foreach ($field['options'] as $opt_value => $opt_label): ?>
+                                            <option value="<?php echo esc_attr($opt_value); ?>" <?php selected($value, $opt_value); ?>>
+                                                <?php echo esc_html($opt_label); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </select>
+                            <?php elseif ($type === 'password'): ?>
+                                <input type="password" id="<?php echo esc_attr($key); ?>" name="<?php echo esc_attr($key); ?>" value="<?php echo esc_attr($value); ?>" class="regular-text" autocomplete="off">
                             <?php else: ?>
                                 <input type="<?php echo esc_attr($type); ?>" id="<?php echo esc_attr($key); ?>" name="<?php echo esc_attr($key); ?>" value="<?php echo esc_attr($value); ?>" class="regular-text">
                             <?php endif; ?>

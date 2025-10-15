@@ -89,6 +89,15 @@ class AdminMenu {
 
         add_submenu_page(
             'ci7k-dashboard',
+            __('Mapeamentos', '7k-coupons-importer'),
+            __('Mapeamentos', '7k-coupons-importer'),
+            'manage_options',
+            'ci7k-mappings',
+            array($this, 'render_mappings')
+        );
+
+        add_submenu_page(
+            'ci7k-dashboard',
             __('Logs', '7k-coupons-importer'),
             __('Logs', '7k-coupons-importer'),
             'manage_options',
@@ -163,6 +172,10 @@ class AdminMenu {
 
     public function render_logs() {
         require_once CI7K_PLUGIN_DIR . 'admin/views/logs.php';
+    }
+
+    public function render_mappings() {
+        require_once CI7K_PLUGIN_DIR . 'admin/views/mappings.php';
     }
 
     public function render_fixes() {

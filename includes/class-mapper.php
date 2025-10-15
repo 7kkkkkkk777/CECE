@@ -40,13 +40,19 @@ class Mapper {
         $coupon_type = get_post_meta($imported_coupon_id, '_ci7k_coupon_type', true);
         $coupon_type = $coupon_type ? intval($coupon_type) : 3;
 
+        $provider = get_post_meta($imported_coupon_id, '_ci7k_provider', true);
         $advertiser_name = get_post_meta($imported_coupon_id, '_ci7k_advertiser', true);
-        $store_term = $this->get_or_create_store($advertiser_name);
-
         $categories = get_post_meta($imported_coupon_id, '_ci7k_categories', true);
+
+        $mapped_data = $this->apply_mappings($provider, $advertiser_name, $categories);
+        $mapped_advertiser = $mapped_data['advertiser'];
+        $mapped_categories = $mapped_data['categories'];
+
+        $store_term = $this->get_or_create_store($mapped_advertiser);
+
         $category_terms = array();
-        if (is_array($categories)) {
-            foreach ($categories as $cat_name) {
+        if (is_array($mapped_categories)) {
+            foreach ($mapped_categories as $cat_name) {
                 $cat_term = $this->get_or_create_category($cat_name);
                 if ($cat_term) {
                     $category_terms[] = $cat_term;
@@ -433,5 +439,144 @@ class Mapper {
         $this->logger->log('bulk_fix', sprintf(__('Correção em massa: %d cupons corrigidos', '7k-coupons-importer'), $fixed_count));
 
         return $fixed_count;
+    }
+
+    public function get_store_mapping($provider, $original_store) {
+        $mappings = $this->get_provider_mappings($provider, 'stores');
+
+        if (isset($mappings[$original_store])) {
+            $this->logger->log('debug', sprintf('Store mapping found: %s -> %s', $original_store, $mappings[$original_store]));
+            return $mappings[$original_store];
+        }
+
+        return $original_store;
+    }
+
+    public function get_category_mapping($provider, $original_category) {
+        $mappings = $this->get_provider_mappings($provider, 'categories');
+
+        if (isset($mappings[$original_category])) {
+            $this->logger->log('debug', sprintf('Category mapping found: %s -> %s', $original_category, $mappings[$original_category]));
+            return $mappings[$original_category];
+        }
+
+        return $original_category;
+    }
+
+    public function save_store_mapping($provider, $original_store, $mapped_store) {
+        $mappings = $this->get_provider_mappings($provider, 'stores');
+        $mappings[$original_store] = $mapped_store;
+
+        return $this->save_provider_mappings($provider, 'stores', $mappings);
+    }
+
+    public function save_category_mapping($provider, $original_category, $mapped_category) {
+        $mappings = $this->get_provider_mappings($provider, 'categories');
+        $mappings[$original_category] = $mapped_category;
+
+        return $this->save_provider_mappings($provider, 'categories', $mappings);
+    }
+
+    public function delete_store_mapping($provider, $original_store) {
+        $mappings = $this->get_provider_mappings($provider, 'stores');
+
+        if (isset($mappings[$original_store])) {
+            unset($mappings[$original_store]);
+            return $this->save_provider_mappings($provider, 'stores', $mappings);
+        }
+
+        return false;
+    }
+
+    public function delete_category_mapping($provider, $original_category) {
+        $mappings = $this->get_provider_mappings($provider, 'categories');
+
+        if (isset($mappings[$original_category])) {
+            unset($mappings[$original_category]);
+            return $this->save_provider_mappings($provider, 'categories', $mappings);
+        }
+
+        return false;
+    }
+
+    public function get_all_store_mappings($provider) {
+        return $this->get_provider_mappings($provider, 'stores');
+    }
+
+    public function get_all_category_mappings($provider) {
+        return $this->get_provider_mappings($provider, 'categories');
+    }
+
+    private function get_provider_mappings($provider, $type) {
+        $option_key = sprintf('ci7k_mappings_%s_%s', sanitize_key($provider), sanitize_key($type));
+        $mappings = get_option($option_key, array());
+
+        return is_array($mappings) ? $mappings : array();
+    }
+
+    private function save_provider_mappings($provider, $type, $mappings) {
+        $option_key = sprintf('ci7k_mappings_%s_%s', sanitize_key($provider), sanitize_key($type));
+        return update_option($option_key, $mappings);
+    }
+
+    public function get_imported_stores($provider) {
+        global $wpdb;
+
+        $stores = $wpdb->get_col($wpdb->prepare("
+            SELECT DISTINCT pm.meta_value
+            FROM {$wpdb->postmeta} pm
+            INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+            INNER JOIN {$wpdb->postmeta} pm2 ON pm2.post_id = p.ID AND pm2.meta_key = '_ci7k_provider'
+            WHERE p.post_type = 'imported_coupon'
+            AND pm.meta_key = '_ci7k_advertiser'
+            AND pm2.meta_value = %s
+            AND pm.meta_value != ''
+            ORDER BY pm.meta_value ASC
+        ", $provider));
+
+        return array_unique($stores);
+    }
+
+    public function get_imported_categories($provider) {
+        global $wpdb;
+
+        $categories = $wpdb->get_col($wpdb->prepare("
+            SELECT DISTINCT pm.meta_value
+            FROM {$wpdb->postmeta} pm
+            INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+            INNER JOIN {$wpdb->postmeta} pm2 ON pm2.post_id = p.ID AND pm2.meta_key = '_ci7k_provider'
+            WHERE p.post_type = 'imported_coupon'
+            AND pm.meta_key = '_ci7k_categories'
+            AND pm2.meta_value = %s
+            AND pm.meta_value != ''
+        ", $provider));
+
+        $all_categories = array();
+        foreach ($categories as $cat_meta) {
+            $cat_array = maybe_unserialize($cat_meta);
+            if (is_array($cat_array)) {
+                $all_categories = array_merge($all_categories, $cat_array);
+            } elseif (is_string($cat_array) && !empty($cat_array)) {
+                $all_categories[] = $cat_array;
+            }
+        }
+
+        return array_unique($all_categories);
+    }
+
+    public function apply_mappings($provider, $advertiser, $categories = array()) {
+        $mapped_advertiser = $this->get_store_mapping($provider, $advertiser);
+
+        $mapped_categories = array();
+        if (is_array($categories)) {
+            foreach ($categories as $category) {
+                $mapped_categories[] = $this->get_category_mapping($provider, $category);
+            }
+        }
+
+        return array(
+            'advertiser' => $mapped_advertiser,
+            'categories' => $mapped_categories
+        );
     }
 }

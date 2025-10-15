@@ -12,7 +12,7 @@ if (!defined('ABSPATH')) {
 
 class Awin {
 
-    private $api_base_url = 'https://api.awin.com/publishers';
+    private $api_base_url = 'https://api.awin.com';
     private $logger;
 
     public function __construct() {
@@ -65,15 +65,20 @@ class Awin {
 
     public function test_connection($settings) {
         try {
-            $endpoint = '/' . $settings['publisher_id'] . '/promotions';
+            $endpoint = '/publishers/' . $settings['publisher_id'] . '/programmes';
             $params = array(
-                'promotionType' => 'voucher',
-                'page' => 1,
-                'pageSize' => 1
+                'relationship' => 'joined'
             );
             $response = $this->make_api_request($endpoint, $settings, $params);
-            return !is_wp_error($response);
+
+            if (is_wp_error($response)) {
+                $this->logger->log('error', 'Awin test connection failed: ' . $response->get_error_message());
+                return false;
+            }
+
+            return true;
         } catch (Exception $e) {
+            $this->logger->log('error', 'Awin test connection exception: ' . $e->getMessage());
             return false;
         }
     }
@@ -81,42 +86,33 @@ class Awin {
     public function get_coupons($settings, $limit = null) {
         $limit = $limit ?: (isset($settings['import_limit']) ? intval($settings['import_limit']) : 50);
         $all_promotions = array();
-        $page = 1;
-        $page_size = min(100, $limit);
 
-        while (count($all_promotions) < $limit) {
-            $endpoint = '/' . $settings['publisher_id'] . '/promotions';
-            $params = array(
-                'promotionType' => 'voucher',
-                'page' => $page,
-                'pageSize' => $page_size
-            );
+        $this->logger->log('info', sprintf('Awin: Iniciando busca de cupons, limite: %d', $limit));
 
-            $response = $this->make_api_request($endpoint, $settings, $params);
+        $endpoint = '/publishers/' . $settings['publisher_id'] . '/offers';
+        $params = array(
+            'type' => 'voucher'
+        );
 
-            if (is_wp_error($response)) {
-                throw new \Exception($response->get_error_message());
-            }
+        $response = $this->make_api_request($endpoint, $settings, $params);
 
-            if (!isset($response['promotions']) || !is_array($response['promotions']) || empty($response['promotions'])) {
-                break;
-            }
-
-            $page_promotions = $this->parse_coupons($response['promotions']);
-            $all_promotions = array_merge($all_promotions, $page_promotions);
-
-            if (count($response['promotions']) < $page_size) {
-                break;
-            }
-
-            $page++;
-
-            usleep(200000);
+        if (is_wp_error($response)) {
+            $this->logger->log('error', 'Awin API error: ' . $response->get_error_message());
+            throw new \Exception($response->get_error_message());
         }
+
+        if (!isset($response) || !is_array($response) || empty($response)) {
+            $this->logger->log('info', 'Awin: Nenhuma promoção encontrada');
+            return array();
+        }
+
+        $all_promotions = $this->parse_coupons($response);
 
         if (count($all_promotions) > $limit) {
             $all_promotions = array_slice($all_promotions, 0, $limit);
         }
+
+        $this->logger->log('info', sprintf('Awin: %d cupons processados', count($all_promotions)));
 
         return $all_promotions;
     }
@@ -133,34 +129,40 @@ class Awin {
         $args = array(
             'timeout' => 30,
             'headers' => array(
-                'Authorization' => 'Bearer ' . $settings['api_token'],
+                'Authorization' => 'Bearer ' . trim($settings['api_token']),
                 'User-Agent' => 'WordPress/7K-Coupons-Importer',
                 'Accept' => 'application/json'
             )
         );
 
+        $this->logger->log('debug', sprintf('Awin API Request: %s', $url));
+
         $response = wp_remote_get($url, $args);
         $response_time = (microtime(true) - $start_time) * 1000;
 
         if (is_wp_error($response)) {
-            $this->logger->log_api_request('awin', $endpoint, 0, $response_time, $response->get_error_message());
+            $error_msg = $response->get_error_message();
+            $this->logger->log_api_request('awin', $endpoint, 0, $response_time, $error_msg);
+            $this->logger->log('error', sprintf('Awin request error: %s', $error_msg));
             return $response;
         }
 
         $response_code = wp_remote_retrieve_response_code($response);
+        $body = wp_remote_retrieve_body($response);
+
         $this->logger->log_api_request('awin', $endpoint, $response_code, $response_time);
 
         if ($response_code !== 200) {
-            $body = wp_remote_retrieve_body($response);
-            $error_message = sprintf('API returned status code: %d. Response: %s', $response_code, $body);
+            $error_message = sprintf('API returned status code: %d. Response: %s', $response_code, substr($body, 0, 500));
+            $this->logger->log('error', 'Awin API Error: ' . $error_message);
             return new \WP_Error('api_error', $error_message);
         }
 
-        $body = wp_remote_retrieve_body($response);
         $data = json_decode($body, true);
 
         if (json_last_error() !== JSON_ERROR_NONE) {
-            return new \WP_Error('json_error', 'Invalid JSON response');
+            $this->logger->log('error', 'Awin JSON decode error: ' . json_last_error_msg());
+            return new \WP_Error('json_error', 'Invalid JSON response: ' . json_last_error_msg());
         }
 
         return $data;
@@ -339,20 +341,19 @@ class Awin {
     }
 
     public function get_advertisers($settings) {
-        $endpoint = '/' . $settings['publisher_id'] . '/programmes';
+        $endpoint = '/publishers/' . $settings['publisher_id'] . '/programmes';
         $params = array(
-            'relationship' => 'joined',
-            'page' => 1,
-            'pageSize' => 100
+            'relationship' => 'joined'
         );
 
         $response = $this->make_api_request($endpoint, $settings, $params);
 
         if (is_wp_error($response)) {
+            $this->logger->log('error', 'Awin get_advertisers error: ' . $response->get_error_message());
             return array();
         }
 
-        $programmes = isset($response['programmes']) ? $response['programmes'] : array();
+        $programmes = isset($response['programmes']) ? $response['programmes'] : (is_array($response) ? $response : array());
 
         if (!is_array($programmes)) {
             return array();

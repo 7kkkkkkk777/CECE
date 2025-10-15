@@ -107,3 +107,8 @@ function ci7k_get_coupon_status_label($status) {
 function ci7k_get_coupon_type_label($ctype) {
     return $ctype == 1 ? __('Cupom', '7k-coupons-importer') : __('Oferta', '7k-coupons-importer');
 }
+
+function ci7k_admin_notice($message, $type = 'success') {
+    $class = $type === 'error' ? 'notice-error' : 'notice-success';
+    echo '<div class="notice ' . esc_attr($class) . ' is-dismissible ci7k-notice"><p>' . esc_html($message) . '</p></div>';
+}

@@ -4,16 +4,16 @@ if (!defined('ABSPATH')) exit;
 // Processar limpeza de logs
 if (isset($_POST['ci7k_clear_logs'])) {
     check_admin_referer('ci7k_logs_nonce');
-    
+
     global $wpdb;
     $table_name = $wpdb->prefix . 'ci7k_logs';
-    
-    $deleted = $wpdb->query("DELETE FROM {$table_name}");
-    
+
+    $deleted = $wpdb->query("TRUNCATE TABLE {$table_name}");
+
     if ($deleted !== false) {
-        ci7k_admin_notice(sprintf(__('%d logs removidos com sucesso!', '7k-coupons-importer'), $deleted));
+        echo '<div class="notice notice-success is-dismissible"><p>' . __('Todos os logs foram removidos com sucesso!', '7k-coupons-importer') . '</p></div>';
     } else {
-        ci7k_admin_notice(__('Erro ao limpar logs.', '7k-coupons-importer'), 'error');
+        echo '<div class="notice notice-error is-dismissible"><p>' . __('Erro ao limpar logs.', '7k-coupons-importer') . '</p></div>';
     }
 }
 
